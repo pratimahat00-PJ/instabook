@@ -16,15 +16,9 @@ app.use(express.json({ limit: "2mb" }));
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Allow non-browser tools (postman/curl)
-      if (!origin) return cb(null, true);
-
-      // Allow all if set to *
+      if (!origin) return cb(null, true);            // postman/curl
       if (ALLOWED_ORIGINS.includes("*")) return cb(null, true);
-
-      // Strict allow list
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-
       return cb(new Error(`CORS blocked: ${origin}`));
     },
     methods: ["GET", "POST", "OPTIONS"],
@@ -39,7 +33,6 @@ const upload = multer({
 });
 
 // ------------------ ENV (ROBUST) ------------------
-// Try multiple env names for Azure Storage connection string
 const STORAGE_CONN =
   process.env.AZURE_STORAGE_CONNECTION_STRING ||
   process.env.AZURE_STORAGE_CONNECTION ||
@@ -47,13 +40,11 @@ const STORAGE_CONN =
   process.env.AZURE_STORAGE_CONN_STRING ||
   "";
 
-// Blob container name
 const BLOB_CONTAINER_NAME =
   process.env.BLOB_CONTAINER_NAME ||
   process.env.BLOB_CONTAINER ||
   "images";
 
-// Cosmos
 const COSMOS_ENDPOINT = process.env.COSMOS_ENDPOINT || "";
 const COSMOS_KEY = process.env.COSMOS_KEY || "";
 const COSMOS_DB_NAME = process.env.COSMOS_DB_NAME || "instabookdb";
@@ -133,7 +124,7 @@ async function initCosmos() {
 }
 
 // ------------------ ROUTES ------------------
-app.get("/", (req, res) => res.send("SharePic API is running ✅"));
+app.get("/", (req, res) => res.send("Instabook API is running ✅"));
 
 app.get("/health", (req, res) => {
   res.json({
@@ -165,7 +156,6 @@ app.post("/api/photos", upload.single("image"), async (req, res) => {
 
     let url = (req.body.url || "").trim();
 
-    // Prefer file upload; fallback to url
     if (req.file) {
       try {
         url = await uploadToBlob(req.file);
@@ -240,14 +230,13 @@ app.get("/api/photos/:id", async (req, res) => {
     const { resource } = await photosContainer.item(id, id).read();
 
     if (!resource) return res.status(404).json({ error: "Photo not found" });
-
     res.json(resource);
   } catch {
     res.status(404).json({ error: "Photo not found" });
   }
 });
 
-// ADD COMMENT (✅ includes authorName)
+// ADD COMMENT (with authorName)
 app.post("/api/photos/:id/comments", async (req, res) => {
   try {
     if (!commentsContainer) return res.status(500).json({ error: "Cosmos not configured" });
@@ -356,7 +345,7 @@ app.get("/api/photos/:id/rating", async (req, res) => {
 initCosmos()
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`✅ API running on port ${PORT}`);
+      console.log(`✅ Instabook API running on port ${PORT}`);
       console.log("✅ Allowed origins:", ALLOWED_ORIGINS);
       console.log("✅ Blob configured:", Boolean(blobServiceClient), "container:", BLOB_CONTAINER_NAME);
       console.log("✅ Cosmos configured:", Boolean(cosmosClient), "db:", COSMOS_DB_NAME);
@@ -366,4 +355,3 @@ initCosmos()
     console.error("Init failed:", err);
     process.exit(1);
   });
-
