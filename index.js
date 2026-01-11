@@ -16,24 +16,30 @@ app.use(express.json({ limit: "2mb" }));
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // postman/curl
+      // Allow non-browser tools (postman/curl)
+      if (!origin) return cb(null, true);
+
+      // Allow all if set to *
       if (ALLOWED_ORIGINS.includes("*")) return cb(null, true);
+
+      // Strict allow list
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+
       return cb(new Error(`CORS blocked: ${origin}`));
     },
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"]
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
 // ------------------ MULTER ------------------
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 } // 8MB
+  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
 });
 
 // ------------------ ENV (ROBUST) ------------------
-// Try multiple possible env var names for storage connection string
+// Try multiple env names for Azure Storage connection string
 const STORAGE_CONN =
   process.env.AZURE_STORAGE_CONNECTION_STRING ||
   process.env.AZURE_STORAGE_CONNECTION ||
@@ -66,7 +72,9 @@ const cosmosClient = (COSMOS_ENDPOINT && COSMOS_KEY)
   ? new CosmosClient({ endpoint: COSMOS_ENDPOINT, key: COSMOS_KEY })
   : null;
 
-let photosContainer, commentsContainer, ratingsContainer;
+let photosContainer;
+let commentsContainer;
+let ratingsContainer;
 
 // ------------------ HELPERS ------------------
 function parseCSVList(val) {
@@ -77,7 +85,6 @@ function parseCSVList(val) {
 
 async function uploadToBlob(file) {
   if (!blobServiceClient) {
-    // Instead of crashing, throw a clear message
     throw new Error("Blob client not configured (missing storage connection string)");
   }
 
@@ -91,7 +98,7 @@ async function uploadToBlob(file) {
   const blockBlobClient = containerClient.getBlockBlobClient(blobName);
 
   await blockBlobClient.uploadData(file.buffer, {
-    blobHTTPHeaders: { blobContentType: file.mimetype || "application/octet-stream" }
+    blobHTTPHeaders: { blobContentType: file.mimetype || "application/octet-stream" },
   });
 
   return blockBlobClient.url;
@@ -108,33 +115,33 @@ async function initCosmos() {
 
   ({ container: photosContainer } = await database.containers.createIfNotExists({
     id: COSMOS_PHOTOS_CONTAINER,
-    partitionKey: { paths: ["/id"] }
+    partitionKey: { paths: ["/id"] },
   }));
 
   ({ container: commentsContainer } = await database.containers.createIfNotExists({
     id: COSMOS_COMMENTS_CONTAINER,
-    partitionKey: { paths: ["/photoId"] }
+    partitionKey: { paths: ["/photoId"] },
   }));
 
   ({ container: ratingsContainer } = await database.containers.createIfNotExists({
     id: COSMOS_RATING_CONTAINER,
-    partitionKey: { paths: ["/photoId"] }
+    partitionKey: { paths: ["/photoId"] },
   }));
 
-  console.log("✅ Cosmos ready:", COSMOS_DB_NAME);
+  console.log("✅ Cosmos DB ready:", COSMOS_DB_NAME);
+  console.log("✅ Containers:", COSMOS_PHOTOS_CONTAINER, COSMOS_COMMENTS_CONTAINER, COSMOS_RATING_CONTAINER);
 }
 
 // ------------------ ROUTES ------------------
 app.get("/", (req, res) => res.send("SharePic API is running ✅"));
 
-// Better: shows what is configured/missing
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
     corsAllowedOrigins: ALLOWED_ORIGINS,
     blob: {
       configured: Boolean(blobServiceClient),
-      container: BLOB_CONTAINER_NAME
+      container: BLOB_CONTAINER_NAME,
     },
     cosmos: {
       configured: Boolean(cosmosClient),
@@ -142,9 +149,9 @@ app.get("/health", (req, res) => {
       containers: {
         photos: COSMOS_PHOTOS_CONTAINER,
         comments: COSMOS_COMMENTS_CONTAINER,
-        ratings: COSMOS_RATING_CONTAINER
-      }
-    }
+        ratings: COSMOS_RATING_CONTAINER,
+      },
+    },
   });
 });
 
@@ -163,11 +170,9 @@ app.post("/api/photos", upload.single("image"), async (req, res) => {
       try {
         url = await uploadToBlob(req.file);
       } catch (blobErr) {
-        // If blob missing, return a helpful message
         return res.status(500).json({
           error: blobErr.message,
           fix: "Set AZURE_STORAGE_CONNECTION_STRING in App Service environment variables",
-          hint: "Or send JSON with { url: 'https://...' } instead of uploading a file."
         });
       }
     }
@@ -175,7 +180,7 @@ app.post("/api/photos", upload.single("image"), async (req, res) => {
     if (!url) {
       return res.status(400).json({
         error: "Provide url OR upload an image file",
-        example: { title: "My photo", url: "https://example.com/photo.jpg" }
+        example: { title: "My photo", url: "https://example.com/photo.jpg" },
       });
     }
 
@@ -188,7 +193,7 @@ app.post("/api/photos", upload.single("image"), async (req, res) => {
       tags: parseCSVList(req.body.tags),
       visibility: (req.body.visibility || "public").trim(),
       url,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     };
 
     await photosContainer.items.create(photo);
@@ -199,7 +204,7 @@ app.post("/api/photos", upload.single("image"), async (req, res) => {
   }
 });
 
-// LIST/SEARCH
+// LIST/SEARCH PHOTOS
 app.get("/api/photos", async (req, res) => {
   try {
     if (!photosContainer) return res.status(500).json({ error: "Cosmos not configured" });
@@ -214,7 +219,7 @@ app.get("/api/photos", async (req, res) => {
             "CONTAINS(LOWER(c.caption), @q) OR " +
             "CONTAINS(LOWER(c.location), @q) " +
             "ORDER BY c.createdAt DESC",
-          parameters: [{ name: "@q", value: q }]
+          parameters: [{ name: "@q", value: q }],
         }
       : { query: "SELECT * FROM c ORDER BY c.createdAt DESC" };
 
@@ -233,6 +238,7 @@ app.get("/api/photos/:id", async (req, res) => {
 
     const id = req.params.id;
     const { resource } = await photosContainer.item(id, id).read();
+
     if (!resource) return res.status(404).json({ error: "Photo not found" });
 
     res.json(resource);
@@ -241,20 +247,24 @@ app.get("/api/photos/:id", async (req, res) => {
   }
 });
 
-// ADD COMMENT
+// ADD COMMENT (✅ includes authorName)
 app.post("/api/photos/:id/comments", async (req, res) => {
   try {
     if (!commentsContainer) return res.status(500).json({ error: "Cosmos not configured" });
 
     const photoId = req.params.id;
+    const authorName = (req.body.authorName || "").trim();
     const text = (req.body.text || "").trim();
-    if (!text) return res.status(400).json({ error: "text is required" });
+
+    if (!authorName) return res.status(400).json({ error: "Commenter name is required" });
+    if (!text) return res.status(400).json({ error: "Comment text is required" });
 
     const comment = {
       id: uuidv4(),
       photoId,
+      authorName,
       text,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     };
 
     await commentsContainer.items.create(comment);
@@ -271,9 +281,10 @@ app.get("/api/photos/:id/comments", async (req, res) => {
     if (!commentsContainer) return res.status(500).json({ error: "Cosmos not configured" });
 
     const photoId = req.params.id;
+
     const querySpec = {
       query: "SELECT * FROM c WHERE c.photoId = @photoId ORDER BY c.createdAt DESC",
-      parameters: [{ name: "@photoId", value: photoId }]
+      parameters: [{ name: "@photoId", value: photoId }],
     };
 
     const { resources } = await commentsContainer.items.query(querySpec).fetchAll();
@@ -284,7 +295,7 @@ app.get("/api/photos/:id/comments", async (req, res) => {
   }
 });
 
-// ADD RATING
+// ADD RATING (1–5)
 app.post("/api/photos/:id/rating", async (req, res) => {
   try {
     if (!ratingsContainer) return res.status(500).json({ error: "Cosmos not configured" });
@@ -300,7 +311,7 @@ app.post("/api/photos/:id/rating", async (req, res) => {
       id: uuidv4(),
       photoId,
       rating,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     };
 
     await ratingsContainer.items.create(ratingDoc);
@@ -320,11 +331,12 @@ app.get("/api/photos/:id/rating", async (req, res) => {
 
     const avgQuery = {
       query: "SELECT VALUE AVG(c.rating) FROM c WHERE c.photoId = @photoId",
-      parameters: [{ name: "@photoId", value: photoId }]
+      parameters: [{ name: "@photoId", value: photoId }],
     };
+
     const countQuery = {
       query: "SELECT VALUE COUNT(1) FROM c WHERE c.photoId = @photoId",
-      parameters: [{ name: "@photoId", value: photoId }]
+      parameters: [{ name: "@photoId", value: photoId }],
     };
 
     const avgRes = await ratingsContainer.items.query(avgQuery).fetchAll();
