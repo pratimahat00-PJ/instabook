@@ -1,5 +1,5 @@
 {
-  "name": "sharepic-api",
+  "name": "InstaBook-api",
   "version": "1.0.0",
   "description": "Cloud-native photo sharing REST API",
   "main": "index.js",
@@ -19,3 +19,4 @@
     "uuid": "^9.0.1"
   }
 }
+
