@@ -6,42 +6,19 @@ const { CosmosClient } = require("@azure/cosmos");
 const { v4: uuidv4 } = require("uuid");
 
 const app = express();
-
-// ---------- CONFIG ----------
 const PORT = process.env.PORT || 3000;
 
-// CORS (comma separated list supported)
+// ------------------ CORS ------------------
 const CORS_ORIGIN_RAW = process.env.CORS_ORIGIN || "*";
 const ALLOWED_ORIGINS = CORS_ORIGIN_RAW.split(",").map(s => s.trim()).filter(Boolean);
 
-// Blob
-const AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
-const BLOB_CONTAINER_NAME = process.env.BLOB_CONTAINER_NAME || "images";
-
-// Cosmos
-const COSMOS_ENDPOINT = process.env.COSMOS_ENDPOINT;
-const COSMOS_KEY = process.env.COSMOS_KEY;
-const COSMOS_DB_NAME = process.env.COSMOS_DB_NAME || "instabookdb";
-
-const COSMOS_PHOTOS_CONTAINER = process.env.COSMOS_PHOTOS_CONTAINER || "photos";
-const COSMOS_COMMENTS_CONTAINER = process.env.COSMOS_COMMENTS_CONTAINER || "comments";
-const COSMOS_RATING_CONTAINER = process.env.COSMOS_RATING_CONTAINER || "ratings";
-
-// ---------- MIDDLEWARE ----------
 app.use(express.json({ limit: "2mb" }));
-
 app.use(
   cors({
     origin: (origin, cb) => {
-      // allow non-browser tools (postman/curl)
-      if (!origin) return cb(null, true);
-
-      // allow all if set to *
+      if (!origin) return cb(null, true); // postman/curl
       if (ALLOWED_ORIGINS.includes("*")) return cb(null, true);
-
-      // strict allow list
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-
       return cb(new Error(`CORS blocked: ${origin}`));
     },
     methods: ["GET", "POST", "OPTIONS"],
@@ -49,45 +26,60 @@ app.use(
   })
 );
 
-// Multer in-memory upload
+// ------------------ MULTER ------------------
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 } // 8MB
 });
 
-// ---------- CLIENTS ----------
-function ensureEnv(name, value) {
-  if (!value) console.warn(`⚠ Missing env var: ${name}`);
-}
+// ------------------ ENV (ROBUST) ------------------
+// Try multiple possible env var names for storage connection string
+const STORAGE_CONN =
+  process.env.AZURE_STORAGE_CONNECTION_STRING ||
+  process.env.AZURE_STORAGE_CONNECTION ||
+  process.env.STORAGE_CONNECTION_STRING ||
+  process.env.AZURE_STORAGE_CONN_STRING ||
+  "";
 
-ensureEnv("AZURE_STORAGE_CONNECTION_STRING", AZURE_STORAGE_CONNECTION_STRING);
-ensureEnv("COSMOS_ENDPOINT", COSMOS_ENDPOINT);
-ensureEnv("COSMOS_KEY", COSMOS_KEY);
+// Blob container name
+const BLOB_CONTAINER_NAME =
+  process.env.BLOB_CONTAINER_NAME ||
+  process.env.BLOB_CONTAINER ||
+  "images";
 
-const blobServiceClient = AZURE_STORAGE_CONNECTION_STRING
-  ? BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING)
+// Cosmos
+const COSMOS_ENDPOINT = process.env.COSMOS_ENDPOINT || "";
+const COSMOS_KEY = process.env.COSMOS_KEY || "";
+const COSMOS_DB_NAME = process.env.COSMOS_DB_NAME || "instabookdb";
+
+const COSMOS_PHOTOS_CONTAINER = process.env.COSMOS_PHOTOS_CONTAINER || "photos";
+const COSMOS_COMMENTS_CONTAINER = process.env.COSMOS_COMMENTS_CONTAINER || "comments";
+const COSMOS_RATING_CONTAINER =
+  process.env.COSMOS_RATING_CONTAINER || process.env.COSMOS_RATINGS_CONTAINER || "ratings";
+
+// ------------------ CLIENTS ------------------
+const blobServiceClient = STORAGE_CONN
+  ? BlobServiceClient.fromConnectionString(STORAGE_CONN)
   : null;
 
 const cosmosClient = (COSMOS_ENDPOINT && COSMOS_KEY)
   ? new CosmosClient({ endpoint: COSMOS_ENDPOINT, key: COSMOS_KEY })
   : null;
 
-let photosContainer;
-let commentsContainer;
-let ratingsContainer;
+let photosContainer, commentsContainer, ratingsContainer;
 
-// ---------- HELPERS ----------
+// ------------------ HELPERS ------------------
 function parseCSVList(val) {
   if (!val) return [];
   if (Array.isArray(val)) return val;
-  return String(val)
-    .split(",")
-    .map(s => s.trim())
-    .filter(Boolean);
+  return String(val).split(",").map(s => s.trim()).filter(Boolean);
 }
 
 async function uploadToBlob(file) {
-  if (!blobServiceClient) throw new Error("Blob client not configured");
+  if (!blobServiceClient) {
+    // Instead of crashing, throw a clear message
+    throw new Error("Blob client not configured (missing storage connection string)");
+  }
 
   const containerClient = blobServiceClient.getContainerClient(BLOB_CONTAINER_NAME);
   await containerClient.createIfNotExists({ access: "blob" });
@@ -97,6 +89,7 @@ async function uploadToBlob(file) {
   const blobName = `${uuidv4()}.${ext}`;
 
   const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+
   await blockBlobClient.uploadData(file.buffer, {
     blobHTTPHeaders: { blobContentType: file.mimetype || "application/octet-stream" }
   });
@@ -104,19 +97,15 @@ async function uploadToBlob(file) {
   return blockBlobClient.url;
 }
 
-// ---------- INIT COSMOS ----------
+// ------------------ INIT COSMOS ------------------
 async function initCosmos() {
   if (!cosmosClient) {
-    console.warn("⚠ Cosmos client not configured, API will not work.");
+    console.warn("⚠ Cosmos not configured. Check COSMOS_ENDPOINT / COSMOS_KEY.");
     return;
   }
 
   const { database } = await cosmosClient.databases.createIfNotExists({ id: COSMOS_DB_NAME });
 
-  // Partition keys:
-  // photos: /id (simple)
-  // comments: /photoId
-  // ratings: /photoId
   ({ container: photosContainer } = await database.containers.createIfNotExists({
     id: COSMOS_PHOTOS_CONTAINER,
     partitionKey: { paths: ["/id"] }
@@ -132,14 +121,34 @@ async function initCosmos() {
     partitionKey: { paths: ["/photoId"] }
   }));
 
-  console.log("✅ Cosmos DB ready:", COSMOS_DB_NAME);
-  console.log("✅ Containers:", COSMOS_PHOTOS_CONTAINER, COSMOS_COMMENTS_CONTAINER, COSMOS_RATING_CONTAINER);
+  console.log("✅ Cosmos ready:", COSMOS_DB_NAME);
 }
 
-// ---------- ROUTES ----------
+// ------------------ ROUTES ------------------
 app.get("/", (req, res) => res.send("SharePic API is running ✅"));
 
-// CREATE PHOTO (multipart with file OR JSON with url)
+// Better: shows what is configured/missing
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    corsAllowedOrigins: ALLOWED_ORIGINS,
+    blob: {
+      configured: Boolean(blobServiceClient),
+      container: BLOB_CONTAINER_NAME
+    },
+    cosmos: {
+      configured: Boolean(cosmosClient),
+      db: COSMOS_DB_NAME,
+      containers: {
+        photos: COSMOS_PHOTOS_CONTAINER,
+        comments: COSMOS_COMMENTS_CONTAINER,
+        ratings: COSMOS_RATING_CONTAINER
+      }
+    }
+  });
+});
+
+// CREATE PHOTO (multipart file OR JSON url)
 app.post("/api/photos", upload.single("image"), async (req, res) => {
   try {
     if (!photosContainer) return res.status(500).json({ error: "Cosmos not configured" });
@@ -149,12 +158,26 @@ app.post("/api/photos", upload.single("image"), async (req, res) => {
 
     let url = (req.body.url || "").trim();
 
-    // if file provided, upload to blob
+    // Prefer file upload; fallback to url
     if (req.file) {
-      url = await uploadToBlob(req.file);
+      try {
+        url = await uploadToBlob(req.file);
+      } catch (blobErr) {
+        // If blob missing, return a helpful message
+        return res.status(500).json({
+          error: blobErr.message,
+          fix: "Set AZURE_STORAGE_CONNECTION_STRING in App Service environment variables",
+          hint: "Or send JSON with { url: 'https://...' } instead of uploading a file."
+        });
+      }
     }
 
-    if (!url) return res.status(400).json({ error: "Provide a url OR upload an image file" });
+    if (!url) {
+      return res.status(400).json({
+        error: "Provide url OR upload an image file",
+        example: { title: "My photo", url: "https://example.com/photo.jpg" }
+      });
+    }
 
     const photo = {
       id: uuidv4(),
@@ -176,7 +199,7 @@ app.post("/api/photos", upload.single("image"), async (req, res) => {
   }
 });
 
-// LIST/SEARCH PHOTOS: /api/photos?q=...
+// LIST/SEARCH
 app.get("/api/photos", async (req, res) => {
   try {
     if (!photosContainer) return res.status(500).json({ error: "Cosmos not configured" });
@@ -210,11 +233,10 @@ app.get("/api/photos/:id", async (req, res) => {
 
     const id = req.params.id;
     const { resource } = await photosContainer.item(id, id).read();
-
     if (!resource) return res.status(404).json({ error: "Photo not found" });
 
     res.json(resource);
-  } catch (err) {
+  } catch {
     res.status(404).json({ error: "Photo not found" });
   }
 });
@@ -262,7 +284,7 @@ app.get("/api/photos/:id/comments", async (req, res) => {
   }
 });
 
-// ADD RATING (1-5)
+// ADD RATING
 app.post("/api/photos/:id/rating", async (req, res) => {
   try {
     if (!ratingsContainer) return res.status(500).json({ error: "Cosmos not configured" });
@@ -318,12 +340,14 @@ app.get("/api/photos/:id/rating", async (req, res) => {
   }
 });
 
-// ---------- START ----------
+// ------------------ START ------------------
 initCosmos()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`✅ API running on port ${PORT}`);
       console.log("✅ Allowed origins:", ALLOWED_ORIGINS);
+      console.log("✅ Blob configured:", Boolean(blobServiceClient), "container:", BLOB_CONTAINER_NAME);
+      console.log("✅ Cosmos configured:", Boolean(cosmosClient), "db:", COSMOS_DB_NAME);
     });
   })
   .catch((err) => {
